@@ -569,21 +569,37 @@ def generate_with_groq(prompt: str, api_key: str) -> str:
         raise RuntimeError("groq is not installed. Install with: pip install groq") from exc
 
     client = Groq(api_key=api_key)
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert LinkedIn ghostwriter for technology leaders. "
-                    "Return only the final post text with no markdown formatting."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.75,
-        max_tokens=400,
-    )
+    last_error = None
+
+    for model in GROQ_MODELS:
+        try:
+            st.caption(f"Groq trying: {model}")
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert LinkedIn ghostwriter for technology leaders. "
+                            "Return only the final post text with no markdown formatting."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.75,
+                max_tokens=400,
+            )
+
+            content = response.choices[0].message.content
+            if content:
+                return content
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise RuntimeError(f"Groq failed: {last_error}")
 
     content = response.choices[0].message.content
     if not content:
