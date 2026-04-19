@@ -17,7 +17,7 @@ load_dotenv()
 
 GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_MODEL = "gpt-4o-mini"
-GROQ_MODEL = "llama3-70b-8192"
+GROQ_MODEL = "llama3-8b-8192"
 OPENROUTER_MODELS = [
     # ⚡ Fast (Primary)
     "mistralai/mistral-7b-instruct",
