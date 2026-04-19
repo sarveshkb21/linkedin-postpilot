@@ -105,3 +105,7 @@ The app is available at `http://localhost:8501`.
 - `Dockerfile` — Container configuration.
 - `.env.example` — Environment variable template.
 - `.gitignore` — Local cleanup rules.
+=======
+# linkedin-postpilot
+AI-powered LinkedIn content assistant I built to generate structured, engaging, and ready-to-post content. Focuses on prompt design, formatting consistency, and output quality.
+>>>>>>> 132f77a95e7cbf3fc59b9d65b10e4bad21345138
