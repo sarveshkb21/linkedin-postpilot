@@ -17,7 +17,7 @@ load_dotenv()
 
 GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_MODEL = "gpt-4o-mini"
-GROQ_MODEL = "mixtral-8x7b-32768"
+GROQ_MODEL = "llama3-70b-8192"
 OPENROUTER_MODELS = [
     # ⚡ Fast (Primary)
     "mistralai/mistral-7b-instruct",
@@ -454,6 +454,47 @@ def enforce_hashtags(text: str) -> str:
     # Append ONE clean hashtag line
     return cleaned_text + "\n\n" + " ".join(hashtags)
 
+def score_post(text: str) -> tuple[int, str]:
+    score = 5
+    suggestions = []
+
+    # Length check
+    word_count = len(text.split())
+    if 100 <= word_count <= 280:
+        score += 1
+    else:
+        suggestions.append("Adjust length for better engagement (100–280 words).")
+
+    # Hook check (first line strong?)
+    first_line = text.split("\n")[0]
+    if len(first_line) > 20:
+        score += 1
+    else:
+        suggestions.append("Improve the opening hook to grab attention.")
+
+    # Hashtag check
+    hashtags = re.findall(r"#\w+", text)
+    if 3 <= len(hashtags) <= 5:
+        score += 1
+    else:
+        suggestions.append("Use 3–5 relevant hashtags.")
+
+    # Readability (line breaks)
+    if "\n\n" in text:
+        score += 1
+    else:
+        suggestions.append("Add spacing for better readability.")
+
+    # CTA check
+    if any(x in text.lower() for x in ["what do you think", "agree", "thoughts", "comment"]):
+        score += 1
+    else:
+        suggestions.append("Consider adding a call-to-action.")
+
+    final_score = min(score, 10)
+    suggestion_text = " ".join(suggestions) if suggestions else "Strong post. Well structured and engaging."
+
+    return final_score, suggestion_text
 
 def generate_with_gemini(prompt: str, api_key: str) -> str:
     if not api_key:
