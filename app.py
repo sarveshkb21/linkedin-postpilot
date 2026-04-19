@@ -606,12 +606,23 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
     if not usable_models:
         usable_models = OPENROUTER_MODELS[:2]
 
+    # 🔹 Sort models by health + latency (SMART ROUTING)
+    sorted_models = sorted(
+        usable_models,
+        key=lambda m: (
+            _MODEL_HEALTH.get(m, 0),
+            _PROVIDER_LATENCY.get(m, 999)
+        )
+    )
+
     # 🔹 Execution loop
-    for model_name in usable_models[:max_models_to_try]:
+    for model_name in sorted_models[:max_models_to_try]:
         st.caption(f"OpenRouter trying: {model_name}")
         payload["model"] = model_name
 
         try:
+            start = time.time()
+
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 json=payload,
@@ -635,6 +646,7 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
 
             if content:
                 _MODEL_HEALTH[model_name] = 0
+                _PROVIDER_LATENCY[model_name] = time.time() - start
                 return content
 
             raise RuntimeError("Empty response")
@@ -651,6 +663,47 @@ FREE_PROVIDER_CHAIN = [
     ("Groq (Free)", generate_with_groq),
     ("OpenRouter (Free)", generate_with_openrouter),
 ]
+
+def generate_post(
+    topic: str,
+    tone: str,
+    length: str,
+    target_audience: str,
+    perspective: str,
+    technical_depth: str,
+    selected_provider: str,
+    gemini_api_key: str,
+    openai_api_key: str,
+    fallback_enabled: bool = False,
+    fallback_gemini_api_key: str = "",
+    groq_api_key: str = "",
+    openrouter_api_key: str = "",
+) -> GenerationResult:
+
+    resolved_depth = resolve_depth(technical_depth, target_audience)
+
+    prompt = build_prompt(
+        topic,
+        tone,
+        length,
+        target_audience,
+        perspective,
+        resolved_depth,
+    )
+
+    api_keys = {
+        "Gemini (Free)": gemini_api_key,
+        "Groq (Free)": groq_api_key,
+        "OpenRouter (Free)": openrouter_api_key,
+    }
+
+    post, provider = generate_with_fallback_chain(prompt, api_keys)
+
+    return GenerationResult(
+        post=post,
+        model_used="Auto",
+        provider=provider,
+    )
 
 def render_copy_button(text: str) -> None:
     payload = json.dumps(text)
