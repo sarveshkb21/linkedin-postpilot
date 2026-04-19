@@ -16,8 +16,8 @@ load_dotenv()
 
 GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_MODEL = "gpt-4o-mini"
-ENV_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-ENV_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
+ENV_OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
 REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 atexit.register(lambda: REQUEST_EXECUTOR.shutdown(wait=False))
 
