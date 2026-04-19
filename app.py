@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-1.5-flash"
 OPENAI_MODEL = "gpt-4o-mini"
 ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 ENV_OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
@@ -79,7 +79,7 @@ def show_generation_error(exc: Exception) -> None:
     elif "authentication" in lower_message or "unauthorized" in lower_message or "api key" in lower_message:
         st.error("Authentication failed. Please verify your API key.")
     else:
-        st.error("Request failed. Please try again or enable fallback.")
+        st.error(f"Request failed: {message}. Please try again or enable fallback.")
 
 
 def clear_sensitive_session_keys() -> None:
