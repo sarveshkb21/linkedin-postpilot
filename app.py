@@ -58,7 +58,7 @@ def retry_call(func, retries: int = 2):
             time.sleep(1.5)
 
 
-def call_with_timeout(func, timeout: int = 15):
+def call_with_timeout(func, timeout: int = 30):
     future = REQUEST_EXECUTOR.submit(func)
     try:
         return future.result(timeout=timeout)
@@ -67,7 +67,7 @@ def call_with_timeout(func, timeout: int = 15):
         raise TimeoutException("Request timed out") from exc
 
 
-def generate_with_control(func, timeout: int = 20):
+def generate_with_control(func, timeout: int = 35):
     return call_with_timeout(lambda: retry_call(func), timeout=timeout)
 
 
@@ -548,6 +548,8 @@ def main() -> None:
 
         if primary_api_key.strip():
             st.success(f"{provider_label}: Using User Provided Key")
+        elif st.secrets.get(f"{provider_label.upper()}_API_KEY"):
+            st.success(f"{provider_label}: Using App Secrets")
         elif selected_env_key:
             st.success(f"{provider_label}: Using Environment Key")
             st.caption("Using default API key from environment. Enter your own key above to override it.")
@@ -555,18 +557,26 @@ def main() -> None:
             st.warning("No API key available for the selected provider.")
 
         st.caption("Your API key is used only for this session and not stored.")
-        if selected_provider == "Gemini (Free)":
+        if "STREAMLIT_SERVER_HEADLESS" in os.environ:
+            # Running on Streamlit Cloud
             st.info(
-                "\U0001F511 Don't have a Gemini API key?\n\n"
-                "[\U0001F680 Generate Gemini API Key](https://aistudio.google.com/app/apikey)\n\n"
-                "Free tier available via Google AI Studio"
+                "\U0001F511 On hosted app, API keys are managed by the app owner.\n\n"
+                "If you need custom keys, run locally or contact support."
             )
         else:
-            st.info(
-                "\U0001F511 Don't have an OpenAI API key?\n\n"
-                "[\U0001F510 Create OpenAI API Key](https://platform.openai.com/api-keys)\n\n"
-                "Requires account and billing setup"
-            )
+            # Local development
+            if selected_provider == "Gemini (Free)":
+                st.info(
+                    "\U0001F511 Don't have a Gemini API key?\n\n"
+                    "[\U0001F680 Generate Gemini API Key](https://aistudio.google.com/app/apikey)\n\n"
+                    "Free tier available via Google AI Studio"
+                )
+            else:
+                st.info(
+                    "\U0001F511 Don't have an OpenAI API key?\n\n"
+                    "[\U0001F510 Create OpenAI API Key](https://platform.openai.com/api-keys)\n\n"
+                    "Requires account and billing setup"
+                )
 
     topic = st.text_area(
         "Topic",
