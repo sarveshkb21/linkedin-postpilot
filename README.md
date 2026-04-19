@@ -1,4 +1,4 @@
-# LinkedIn Content Generator Pro
+# LinkedIn PostPilot - LinkedIn Content Generator Pro
 
 A Streamlit application that generates LinkedIn post drafts using Gemini and OpenAI.
 It includes smart prompt building, hashtag normalization, bullet-friendly post formatting, and a regeneration workflow.
