@@ -7,7 +7,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
-
+from threading import Lock
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -19,10 +19,20 @@ GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_MODEL = "gpt-4o-mini"
 GROQ_MODEL = "mixtral-8x7b-32768"
 OPENROUTER_MODELS = [
+    # ⚡ Fast (Primary)
     "mistralai/mistral-7b-instruct",
     "openchat/openchat-7b",
-    "meta-llama/llama-2-13b-chat",
-    "meta-llama/llama-2-70b-chat",
+    "meta-llama/llama-3.2-3b-instruct",
+    "google/gemma-3-4b",
+
+    # ⚖️ Balanced (Fallback)
+    "google/gemma-3-12b",
+    "z-ai/glm-4.5-air",
+    "minimax/minimax-m2.5",
+    "meta-llama/llama-3.3-70b-instruct",
+
+    # 🧠 Heavy (Last resort)
+    "nous/hermes-3-405b",
 ]
 ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 ENV_OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")).strip()
@@ -43,6 +53,7 @@ _PROVIDER_HEALTH = {
 _MODEL_HEALTH = {}
 _PROVIDER_LATENCY = {}
 _IN_PROGRESS = set()
+_IN_PROGRESS_LOCK = Lock()
 
 
 @dataclass
@@ -124,13 +135,13 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
     if cached:
         return cached, "Cache"
 
-    if prompt_hash in _IN_PROGRESS:
-        time.sleep(0.5)
-        cached = get_cached_response(prompt_hash)
-        if cached:
-            return cached, "Cache"
-
-    _IN_PROGRESS.add(prompt_hash)
+    with _IN_PROGRESS_LOCK:
+        if prompt_hash in _IN_PROGRESS:
+            time.sleep(0.5)
+            cached = get_cached_response(prompt_hash)
+            if cached:
+                return cached, "Cache"
+        _IN_PROGRESS.add(prompt_hash)
 
     try:
         last_error = None
@@ -167,7 +178,8 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
 
         raise RuntimeError(f"All providers failed: {last_error}")
     finally:
-        _IN_PROGRESS.discard(prompt_hash)
+        with _IN_PROGRESS_LOCK:
+             _IN_PROGRESS.discard(prompt_hash)
 
 
 def call_with_timeout(func, timeout: int = 30):
@@ -551,7 +563,7 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
     }
 
     payload = {
-        "model": OPENROUTER_MODELS[0],  # default initial model
+        "model": OPENROUTER_MODELS[0],
         "messages": [
             {
                 "role": "system",
@@ -565,162 +577,80 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
         "temperature": 0.75,
         "max_tokens": 400,
     }
-
+    
+    
     last_error = None
     max_models_to_try = 2
+
+    # 🔹 Tier definitions
+    FAST_MODELS = OPENROUTER_MODELS[:4]
+    BALANCED_MODELS = OPENROUTER_MODELS[4:8]
+    HEAVY_MODELS = OPENROUTER_MODELS[8:]
+
+    # 🔹 Smart selection
+    if len(prompt) < 800:
+        selected_models = FAST_MODELS
+    else:
+        selected_models = FAST_MODELS + BALANCED_MODELS[:2]
+
+    # 🔹 Filter unhealthy
     usable_models = [
-        m for m in OPENROUTER_MODELS
+        m for m in selected_models
         if _MODEL_HEALTH.get(m, 0) <= 2
     ]
 
+    # 🔹 Fallback safety
     if not usable_models:
-        usable_models = OPENROUTER_MODELS[:2]  # force retry
+        usable_models = FAST_MODELS[:2]
 
+    if not usable_models:
+        usable_models = OPENROUTER_MODELS[:2]
+
+    # 🔹 Execution loop
     for model_name in usable_models[:max_models_to_try]:
+        st.caption(f"OpenRouter trying: {model_name}")
         payload["model"] = model_name
 
-        if _MODEL_HEALTH.get(model_name, 0) > 2:
-            continue
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=20,
+            )
 
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=20,
-        )
+            if response.status_code != 200:
+                raise RuntimeError(f"{response.status_code}: {response.text}")
 
-        if response.status_code != 200:
-            last_error = RuntimeError(f"OpenRouter request failed for {model_name}: {response.status_code} {response.text}")
+            data = response.json()
+
+            # 🔒 Cost protection
+            if "usage" in data and data["usage"].get("total_cost", 0) > 0:
+                raise RuntimeError(f"Paid model triggered: {model_name}")
+
+            if "error" in data:
+                raise RuntimeError(data["error"])
+
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            if content:
+                _MODEL_HEALTH[model_name] = 0
+                return content
+
+            raise RuntimeError("Empty response")
+
+        except Exception as e:
             _MODEL_HEALTH[model_name] = _MODEL_HEALTH.get(model_name, 0) + 1
+            last_error = e
             continue
 
-        data = response.json()
-        if "usage" in data and data["usage"].get("total_cost", 0) > 0:
-            raise RuntimeError(f"Paid model triggered: {model_name}")
-
-        if "error" in data:
-            last_error = RuntimeError(f"OpenRouter error for {model_name}: {data['error']}")
-            _MODEL_HEALTH[model_name] = _MODEL_HEALTH.get(model_name, 0) + 1
-            continue
-
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if content:
-            _MODEL_HEALTH[model_name] = 0  # reset on success
-            return content
-
-        last_error = RuntimeError(f"OpenRouter returned an empty response for {model_name}.")
-        _MODEL_HEALTH[model_name] = _MODEL_HEALTH.get(model_name, 0) + 1
-
-    raise last_error or RuntimeError("OpenRouter failed for all available models.")
-
+    raise RuntimeError(f"OpenRouter failed: {last_error}")
 
 FREE_PROVIDER_CHAIN = [
     ("Gemini (Free)", generate_with_gemini),
     ("Groq (Free)", generate_with_groq),
     ("OpenRouter (Free)", generate_with_openrouter),
 ]
-
-
-def generate_post(
-    topic: str,
-    tone: str,
-    length: str,
-    target_audience: str,
-    perspective: str,
-    technical_depth: str,
-    provider: str,
-    gemini_api_key: str,
-    openai_api_key: str,
-    fallback_enabled: bool = False,
-    fallback_gemini_api_key: str = "",
-    groq_api_key: str = "",
-    openrouter_api_key: str = "",
-) -> GenerationResult:
-    depth = resolve_depth(technical_depth, target_audience)
-    prompt = build_prompt(topic, tone, length, target_audience, perspective, depth)
-
-    # Map provider names to generation functions and API keys
-    if provider == "OpenAI (Premium)":
-        try:
-            raw_post = generate_with_control(lambda: generate_with_openai(prompt, openai_api_key))
-            post = clean_post(raw_post)
-            post = enforce_hashtags(post)
-            return GenerationResult(post=post, model_used=OPENAI_MODEL, provider="OpenAI")
-        except Exception as exc:
-            if not fallback_enabled:
-                raise RuntimeError(
-                    "OpenAI request failed. Enable fallback or verify API key/configuration."
-                ) from exc
-
-            try:
-                raw_post = generate_with_control(lambda: generate_with_gemini(prompt, fallback_gemini_api_key))
-                post = clean_post(raw_post)
-                post = enforce_hashtags(post)
-                return GenerationResult(post=post, model_used=GEMINI_MODEL, provider="Gemini (Fallback)")
-            except Exception as fallback_exc:
-                raise RuntimeError(
-                    "OpenAI request failed, and Gemini fallback also failed. Verify both API keys/configuration."
-                ) from fallback_exc
-
-    free_api_keys = {
-        "Gemini (Free)": gemini_api_key,
-        "Groq (Free)": groq_api_key,
-        "OpenRouter (Free)": openrouter_api_key,
-    }
-
-    post, used_provider = generate_with_fallback_chain(prompt, free_api_keys)
-    model_name_map = {
-        "Gemini (Free)": GEMINI_MODEL,
-        "Groq (Free)": GROQ_MODEL,
-        "OpenRouter (Free)": "OpenRouter Multi-Model",
-        "Cache": "Cached Response",
-    }
-    return GenerationResult(post=post, model_used=model_name_map.get(used_provider, "Unknown"), provider=used_provider)
-
-
-def score_post(post: str) -> tuple[int, str]:
-    score = 1
-    suggestions = []
-    lines = [line.strip() for line in post.splitlines() if line.strip()]
-    words = re.findall(r"\b\w+\b", post)
-    hashtags = re.findall(r"(?<!\w)#\w+", post)
-    emoji_count = len(re.findall(r"[\U0001F300-\U0001FAFF]", post))
-
-    if lines and len(lines[0]) <= 110:
-        score += 2
-    else:
-        suggestions.append("Tighten the first line into a sharper hook.")
-
-    if 80 <= len(words) <= 330:
-        score += 1
-    else:
-        suggestions.append("Adjust the post length for faster LinkedIn scanning.")
-
-    if len(lines) >= 3:
-        score += 1
-    else:
-        suggestions.append("Break the idea into shorter paragraphs.")
-
-    if 3 <= len(hashtags) <= 5:
-        score += 2
-    else:
-        suggestions.append("Use 3 to 5 focused hashtags.")
-
-    if emoji_count <= 5:
-        score += 1
-    else:
-        suggestions.append("Avoid excessive emoji usage.")
-
-    cta_patterns = r"\b(comment|share|follow|connect|message|try|start|tell me|what do you think|reach out|thoughts|tips|insights)\b"
-    if re.search(cta_patterns, post, flags=re.IGNORECASE):
-        score += 2
-    else:
-        suggestions.append("End with a clearer call to action.")
-
-    score = max(1, min(score, 10))
-    suggestion = suggestions[0] if suggestions else "Strong structure. Consider adding one specific example if you want more credibility."
-    return score, suggestion
-
 
 def render_copy_button(text: str) -> None:
     payload = json.dumps(text)
