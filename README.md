@@ -1,110 +1,257 @@
-# LinkedIn PostPilot - LinkedIn Content Generator Pro
+# 🚀 LinkedIn Content Generator Pro
 
-A Streamlit application that generates LinkedIn post drafts using Gemini and OpenAI.
-It includes smart prompt building, hashtag normalization, bullet-friendly post formatting, and a regeneration workflow.
+An intelligent, free-tier optimized AI-powered LinkedIn post generator with **multi-provider routing, fallback logic, caching, and self-healing execution**.
 
-## Features
+Built using **Streamlit + LLM APIs (Gemini, Groq, OpenRouter, OpenAI)**.
 
-- Generate LinkedIn posts from:
-  - Topic
-  - Tone
-  - Target audience
-  - Perspective
-  - Length
-  - Technical depth
-- Choose between Gemini (free) and OpenAI (premium).
-- Optional Gemini fallback when OpenAI fails.
-- Smart output formatting with:
-  - natural emoji support,
-  - bullet-friendly structure,
-  - consistent bullet style,
-  - 3–5 hashtags enforced at the end of the post.
-- Hashtag normalization converts keyword-only trailing lines into proper `#tag` format.
-- Regenerate button creates a new variation without mutating the original topic.
-- Built-in post scoring with suggestions for hooks, length, structure, hashtags, and CTAs.
+---
 
-## Requirements
+# ✨ Key Features
 
-- Python 3.11+
-- `streamlit`
-- `google-genai`
-- `openai`
-- `python-dotenv`
+## 🧠 Smart AI Routing
 
-## Setup
+* Automatically selects the best available provider
+* Health-aware + latency-aware routing
+* Seamless fallback across:
 
-1. Clone the repository.
-2. Create and activate a virtual environment:
+  * Gemini (Primary)
+  * Groq (Fast fallback)
+  * OpenRouter (Multi-model fallback)
 
-```bash
-python -m venv .venv
-.\.venv\Scripts\activate
+---
+
+## 🔁 Multi-Level Resilience
+
+* Provider-level fallback
+* Model-level fallback (OpenRouter)
+* Retry + timeout control
+* Self-healing health tracking
+
+---
+
+## ⚡ Performance Optimization
+
+* Prompt-level caching (TTL-based)
+* Cache stampede protection
+* Concurrency control
+* Rate limiting (built-in throttling)
+
+---
+
+## 💰 Cost Control
+
+* Free-tier first architecture
+* Automatic prevention of paid model usage (OpenRouter safeguard)
+* Optional OpenAI premium usage
+
+---
+
+## 🎯 Content Quality
+
+* Audience-aware generation (Executives, Managers, Engineers)
+* Perspective-based writing (Leader, Practitioner, Advisor, Storyteller)
+* Technical depth control
+* Built-in LinkedIn formatting + hashtag enforcement
+* Engagement scoring system
+
+---
+
+# 🏗️ Architecture Overview
+
+```
+User Input (Streamlit UI)
+        ↓
+Prompt Builder
+        ↓
+AI Execution Engine
+   ├── Cache Layer
+   ├── In-progress Protection
+   ├── Provider Router (Health + Latency)
+   ├── Model Router (OpenRouter)
+   ├── Retry + Timeout Control
+   └── Cost Guard
+        ↓
+LLM Providers
+(Gemini / Groq / OpenRouter / OpenAI)
 ```
 
-3. Install dependencies:
+---
+
+# 🔑 API Key Configuration
+
+The app supports **three methods** to configure API keys:
+
+---
+
+## ✅ Option 1: Streamlit Secrets (Recommended for Deployment)
+
+Add in **Streamlit Cloud → Settings → Secrets**
+
+```toml
+GEMINI_API_KEY = "your_gemini_key"
+GROQ_API_KEY = "your_groq_key"
+OPENROUTER_API_KEY = "your_openrouter_key"
+OPENAI_API_KEY = "your_openai_key"  # optional
+```
+
+---
+
+## ✅ Option 2: Local Development (.env)
+
+Create a `.env` file:
 
 ```bash
+GEMINI_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
+OPENROUTER_API_KEY=your_openrouter_key
+OPENAI_API_KEY=your_openai_key
+```
+
+⚠️ Add `.env` to `.gitignore`
+
+---
+
+## ✅ Option 3: Runtime Input (UI)
+
+* Enter API key directly in sidebar
+* App auto-detects provider based on key format
+
+---
+
+# ▶️ How to Run Locally
+
+```bash
+git clone <your-repo>
+cd <your-repo>
+
 pip install -r requirements.txt
-```
 
-4. Copy environment variables:
-
-```bash
-copy .env.example .env
-```
-
-5. Add your API keys to `.env`:
-
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-OPENAI_API_KEY=your_openai_api_key_here
-```
-
-## Running Locally
-
-```bash
 streamlit run app.py
 ```
 
-Then open the URL printed by Streamlit (typically `http://localhost:8501`).
+---
 
-## Running with Docker
+# 🧪 Provider Strategy
 
-Build the image:
+## Default Flow (Auto Mode)
 
-```bash
-docker build -t linkedin-content-generator-pro .
+```
+Gemini → Groq → OpenRouter
 ```
 
-Run the container:
+### OpenRouter Model Fallback:
 
-```bash
-docker run -p 8501:8501 --env-file .env linkedin-content-generator-pro
+```
+Mistral → OpenChat → Llama 13B → Llama 70B
 ```
 
-The app is available at `http://localhost:8501`.
+---
 
-## Environment Variables
+# 📊 Execution Logic
 
-- `GEMINI_API_KEY`: API key for Gemini.
-- `OPENAI_API_KEY`: API key for OpenAI.
-- `PORT`: Optional port for Docker deployment (default is `8501`).
+| Layer            | Purpose                        |
+| ---------------- | ------------------------------ |
+| Cache            | Avoid duplicate API calls      |
+| In-Progress Lock | Prevent concurrent duplication |
+| Provider Health  | Avoid failing providers        |
+| Latency Tracking | Prefer faster providers        |
+| Model Health     | Skip failing models            |
+| Retry Logic      | Handle transient errors        |
 
-## Notes
+---
 
-- A valid API key is required for the selected provider.
-- Gemini API keys are expected to start with `AIza`.
-- OpenAI API keys are expected to start with `sk-` or `sk-proj-`.
-- If OpenAI is selected and fallback is enabled, Gemini is only used if OpenAI fails.
-- The app normalizes duplicate hashtag lines and appends a single clean hashtag line at the end.
+# ⚙️ Configuration Constants
 
-## Project Structure
+You can tune behavior in code:
 
-- `app.py` — Streamlit application.
-- `requirements.txt` — Python dependencies.
-- `Dockerfile` — Container configuration.
-- `.env.example` — Environment variable template.
-- `.gitignore` — Local cleanup rules.
-=======
-# linkedin-postpilot
-AI-powered LinkedIn content assistant I built to generate structured, engaging, and ready-to-post content. Focuses on prompt design, formatting consistency, and output quality.
+```python
+MAX_CACHE_SIZE = 100
+REQUEST_TIMEOUT = 35
+MAX_WORKERS = 2
+MODEL_RETRY_LIMIT = 2
+```
+
+---
+
+# ⚠️ Known Limitations
+
+* In-memory cache (not distributed)
+* No persistent storage
+* Rate limits depend on provider free tiers
+* Not optimized for very high concurrency (yet)
+
+---
+
+# 🚀 Future Enhancements
+
+* FastAPI-based AI Gateway (decouple UI)
+* Redis caching layer
+* Provider analytics dashboard
+* Cost tracking + optimization engine
+* Scheduled post generation
+* LinkedIn auto-publishing integration
+
+---
+
+# 🔐 Security Best Practices
+
+* Never commit API keys
+* Use `.env` or secrets manager
+* Rotate keys periodically
+* Avoid logging sensitive data
+
+---
+
+# 🧠 Why This Project Matters
+
+This project demonstrates:
+
+* Multi-provider LLM orchestration
+* Resilient AI system design
+* Cost-aware AI usage
+* Real-world AI infrastructure patterns
+
+---
+
+# 📌 Tech Stack
+
+* Python
+* Streamlit
+* Gemini API (Google)
+* Groq API
+* OpenRouter API
+* OpenAI API (optional)
+* dotenv
+
+---
+
+# 🙌 Contributing
+
+Feel free to:
+
+* Improve routing logic
+* Add new providers
+* Enhance UI/UX
+* Optimize performance
+
+---
+
+# 📄 License
+
+MIT License
+
+---
+
+# ⭐ Final Note
+
+This is not just a content generator.
+
+It is a **lightweight AI execution engine** designed to:
+
+* minimize cost
+* maximize availability
+* adapt in real-time
+
+---
+
+Happy building 🚀
