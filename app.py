@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from threading import Lock
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 
@@ -47,7 +48,6 @@ atexit.register(lambda: REQUEST_EXECUTOR.shutdown(wait=False))
 
 # Simple in-memory cache for duplicate requests
 _REQUEST_CACHE = {}
-_RATE_LIMIT_TRACKER = {}
 MAX_CACHE_SIZE = 100
 _PROVIDER_HEALTH = {
     "Gemini (Free)": 0,
@@ -140,12 +140,17 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
         return cached, "Cache"
 
     with _IN_PROGRESS_LOCK:
-        if prompt_hash in _IN_PROGRESS:
-            time.sleep(0.5)
-            cached = get_cached_response(prompt_hash)
-            if cached:
-                return cached, "Cache"
-        _IN_PROGRESS.add(prompt_hash)
+        in_progress = prompt_hash in _IN_PROGRESS
+        if not in_progress:
+            _IN_PROGRESS.add(prompt_hash)
+
+    if in_progress:
+        time.sleep(0.5)
+        cached = get_cached_response(prompt_hash)
+        if cached:
+            return cached, "Cache"
+        with _IN_PROGRESS_LOCK:
+            _IN_PROGRESS.add(prompt_hash)
 
     try:
         last_error = None
@@ -218,7 +223,6 @@ def clear_sensitive_session_keys() -> None:
         "gemini_api_key",
         "openai_api_key",
         "fallback_api_key",
-        "fallback_gemini_api_key",
     ):
         st.session_state.pop(key, None)
 
@@ -601,12 +605,6 @@ def generate_with_groq(prompt: str, api_key: str) -> str:
 
     raise RuntimeError(f"Groq failed: {last_error}")
 
-    content = response.choices[0].message.content
-    if not content:
-        raise RuntimeError("Groq returned an empty response.")
-
-    return content
-
 
 def generate_with_openrouter(prompt: str, api_key: str) -> str:
     if not api_key:
@@ -646,7 +644,6 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
     # 🔹 Tier definitions
     FAST_MODELS = OPENROUTER_MODELS[:4]
     BALANCED_MODELS = OPENROUTER_MODELS[4:8]
-    HEAVY_MODELS = OPENROUTER_MODELS[8:]
 
     # 🔹 Smart selection
     if len(prompt) < 800:
@@ -735,8 +732,6 @@ def generate_post(
     selected_provider: str,
     gemini_api_key: str,
     openai_api_key: str,
-    fallback_enabled: bool = False,
-    fallback_gemini_api_key: str = "",
     groq_api_key: str = "",
     openrouter_api_key: str = "",
 ) -> GenerationResult:
@@ -767,8 +762,13 @@ def generate_post(
     )
 
 def render_copy_button(text: str) -> None:
-    payload = json.dumps(text)
-    st.iframe(
+    payload = (
+        json.dumps(text, ensure_ascii=True)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("/", "\\u002f")
+    )
+    components.html(
         f"""
         <button id="copy-btn" style="
             background:#0a66c2;
@@ -805,44 +805,22 @@ def main() -> None:
         st.session_state["initialized"] = True
 
     st.title("\U0001F680 LinkedIn Content Generator Pro")
-    st.caption("Tip: Use Gemini or Groq for free tier, OpenAI for premium quality")
 
-    with st.sidebar:
-        st.header("Settings")
-        st.subheader("Free Tier Provider")
-        selected_provider = "Auto (Recommended)"
-        provider_label = "Auto"
-        selected_env_key = ""
+    selected_provider = "Auto (Recommended)"
 
-        # Keep password inputs unkeyed so secrets are not stored under named session_state entries.
-        primary_api_key = st.text_input("Auto API Key (Primary)", type="password")
-        fallback_enabled = False
-        fallback_gemini_api_key = ""
+    # Keep password input unkeyed so the secret is not stored under a named session_state entry.
+    primary_api_key = st.text_input(
+        "API Key",
+        type="password",
+        placeholder="Paste your Gemini, Groq, or OpenRouter API key",
+    )
+    st.caption("Your API key is used only for this session and not stored.")
 
-        if primary_api_key.strip():
-            st.success("Auto: Using user-provided free-tier API key")
-        elif ENV_GEMINI_API_KEY or ENV_GROQ_API_KEY or ENV_OPENROUTER_API_KEY:
-            st.success("Auto: Using one or more free-tier keys from environment")
-        else:
-            st.warning("No free-tier API key available. Enter one above or configure an environment key.")
-
-        st.caption("Your API key is used only for this session and not stored.")
-        if "STREAMLIT_SERVER_HEADLESS" in os.environ:
-            # Running on Streamlit Cloud
-            st.info(
-                "\U0001F511 On hosted app, API keys are managed by the app owner.\n\n"
-                "If you need custom keys, run locally or contact support."
-            )
-        else:
-            # Local development help links
-            help_links = {
-                "Gemini": "[\U0001F680 Generate Gemini API Key](https://aistudio.google.com/app/apikey)\n\nFree tier available via Google AI Studio",
-                "Groq": "[\U0001F680 Generate Groq API Key](https://console.groq.com/keys)\n\nFree tier available via Groq Console",
-                "OpenRouter": "[\U0001F680 Create OpenRouter API Key](https://openrouter.ai/keys)\n\nFree tier available via OpenRouter",
-                "OpenAI": "[\U0001F510 Create OpenAI API Key](https://platform.openai.com/api-keys)\n\nRequires account and billing setup",
-            }
-            if provider_label in help_links:
-                st.info(f"\U0001F511 Don't have a {provider_label} API key?\n\n{help_links[provider_label]}")
+    if "STREAMLIT_SERVER_HEADLESS" in os.environ:
+        st.info(
+            "\U0001F511 On hosted app, API keys are managed by the app owner.\n\n"
+            "If you need custom keys, run locally or contact support."
+        )
 
     topic = st.text_area(
         "Topic",
@@ -878,11 +856,7 @@ def main() -> None:
         st.caption(f"Auto-selected depth: {resolved_depth}")
 
     primary_api_key = primary_api_key.strip()
-    fallback_gemini_api_key = resolve_api_key(
-        fallback_gemini_api_key.strip(),
-        ENV_GEMINI_API_KEY,
-    )
-    
+
     # Resolve all free-provider API keys by key format or environment
     gemini_api_key = resolve_api_key(
         primary_api_key if is_valid_gemini_key(primary_api_key) else "",
@@ -910,38 +884,19 @@ def main() -> None:
         selected_api_key = openrouter_api_key
 
     invalid_primary = not selected_api_key
-    missing_fallback_key = fallback_enabled and not fallback_gemini_api_key
-    invalid_fallback_key = (
-        fallback_enabled
-        and fallback_gemini_api_key
-        and not is_valid_gemini_key(fallback_gemini_api_key)
-    )
     topic_missing = not topic.strip()
-    generate_disabled = (
-        invalid_primary
-        or missing_fallback_key
-        or invalid_fallback_key
-        or topic_missing
-    )
-
-    provider_label = "Auto"
+    generate_disabled = invalid_primary or topic_missing
 
     if not selected_api_key:
         _, message_col, _ = st.columns([1, 2, 1])
         with message_col:
-            st.warning("\U0001F511 Add an API key in the sidebar or configure one in the environment")
+            st.warning("\U0001F511 Add an API key above or configure one in the environment")
     elif invalid_primary:
         st.error("Invalid API key format")
-    elif missing_fallback_key:
-        st.error("Fallback enabled but no Gemini API key available (user or environment)")
-    elif invalid_fallback_key:
-        st.error("Invalid Gemini fallback API key format")
     elif topic_missing:
         st.warning("Please enter a topic to generate a LinkedIn post")
     else:
-        st.success(f"Using {provider_label}")
-        if fallback_enabled and fallback_gemini_api_key == gemini_api_key and selected_provider == "OpenAI (Premium)":
-            st.warning("Primary and fallback Gemini keys are the same")
+        st.success("Using Auto")
 
     generate = st.button(
         "Generate LinkedIn Post",
@@ -957,9 +912,7 @@ def main() -> None:
 
         with st.spinner("Generating your LinkedIn post..."):
             try:
-                if selected_provider == "OpenAI (Premium)" and fallback_enabled:
-                    st.caption("OpenAI selected. Gemini fallback is enabled and will be used only if OpenAI fails.")
-                elif selected_provider == "Auto (Recommended)":
+                if selected_provider == "Auto (Recommended)":
                     st.caption("Auto mode will choose the first available free provider key.")
 
                 start_time = time.time()
@@ -973,8 +926,6 @@ def main() -> None:
                     selected_provider,
                     gemini_api_key,
                     openai_api_key,
-                    fallback_enabled=fallback_enabled,
-                    fallback_gemini_api_key=fallback_gemini_api_key,
                     groq_api_key=groq_api_key,
                     openrouter_api_key=openrouter_api_key,
                 )
@@ -984,7 +935,6 @@ def main() -> None:
                 st.session_state["last_score"] = score
                 st.session_state["last_suggestion"] = suggestion
                 st.session_state["last_latency"] = latency
-                st.session_state["fallback_used"] = result.provider == "Gemini (Fallback)"
                 st.session_state["last_inputs"] = {
                     "topic": topic.strip(),
                     "tone": tone,
@@ -997,8 +947,6 @@ def main() -> None:
                     "openai_api_key": openai_api_key,
                     "groq_api_key": groq_api_key,
                     "openrouter_api_key": openrouter_api_key,
-                    "fallback_enabled": fallback_enabled,
-                    "fallback_gemini_api_key": fallback_gemini_api_key,
                 }
                 st.session_state["regen_count"] = 0
                 st.session_state.pop("last_regenerated_latency", None)
@@ -1012,7 +960,6 @@ def main() -> None:
         suggestion = st.session_state["last_suggestion"]
         latency = st.session_state.get("last_latency")
         regenerated_latency = st.session_state.get("last_regenerated_latency")
-        fallback_used = st.session_state.get("fallback_used", False)
         regen_count = st.session_state.get("regen_count", 0)
 
         left, right = st.columns([2, 1])
@@ -1021,8 +968,6 @@ def main() -> None:
             st.subheader("Generated Post")
             st.success(f"Generated using: {result.provider}")
             st.caption(f"Execution Path: {result.provider} -> {result.model_used}")
-            if fallback_used:
-                st.warning("Fallback triggered during execution")
             if latency is not None:
                 st.caption(f"Latency: {latency:.2f}s")
             if regen_count:
@@ -1057,8 +1002,6 @@ def main() -> None:
                                     last_inputs["provider"],
                                     last_inputs["gemini_api_key"],
                                     last_inputs["openai_api_key"],
-                                    fallback_enabled=last_inputs["fallback_enabled"],
-                                    fallback_gemini_api_key=last_inputs["fallback_gemini_api_key"],
                                     groq_api_key=last_inputs.get("groq_api_key", ""),
                                     openrouter_api_key=last_inputs.get("openrouter_api_key", ""),
                                 )
@@ -1069,7 +1012,6 @@ def main() -> None:
                                 st.session_state["last_suggestion"] = regenerated_suggestion
                                 st.session_state["last_latency"] = regenerated_latency
                                 st.session_state["last_regenerated_latency"] = regenerated_latency
-                                st.session_state["fallback_used"] = regenerated_result.provider == "Gemini (Fallback)"
                                 st.session_state["regen_count"] = st.session_state.get("regen_count", 0) + 1
                                 st.rerun()
                             except Exception as exc:
