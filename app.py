@@ -71,19 +71,9 @@ class TimeoutException(Exception):
     pass
 
 
-def resolve_api_key(user_key: str, env_key: str) -> str:
-    user_key = user_key.strip()
-    return user_key if user_key else env_key
-
-
 def is_valid_gemini_key(api_key: str) -> bool:
     api_key = api_key.strip()
     return api_key.startswith("AIza") and len(api_key) > 30
-
-
-def is_valid_openai_key(api_key: str) -> bool:
-    api_key = api_key.strip()
-    return api_key.startswith("sk-") or api_key.startswith("sk-proj-")
 
 
 def is_valid_groq_key(api_key: str) -> bool:
@@ -215,16 +205,6 @@ def show_generation_error(exc: Exception) -> None:
     else:
         st.error(f"Request failed: {message}. Please try again or enable fallback.")
 
-
-def clear_sensitive_session_keys() -> None:
-    for key in (
-        "api_key",
-        "primary_api_key",
-        "gemini_api_key",
-        "openai_api_key",
-        "fallback_api_key",
-    ):
-        st.session_state.pop(key, None)
 
 
 def persona_instructions(target_audience: str) -> str:
@@ -800,27 +780,9 @@ def main() -> None:
         layout="wide",
     )
 
-    if "initialized" not in st.session_state:
-        clear_sensitive_session_keys()
-        st.session_state["initialized"] = True
-
-    st.title("\U0001F680 LinkedIn Content Generator Pro")
-
     selected_provider = "Auto (Recommended)"
 
-    # Keep password input unkeyed so the secret is not stored under a named session_state entry.
-    primary_api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder="Paste your Gemini, Groq, or OpenRouter API key",
-    )
-    st.caption("Your API key is used only for this session and not stored.")
-
-    if "STREAMLIT_SERVER_HEADLESS" in os.environ:
-        st.info(
-            "\U0001F511 On hosted app, API keys are managed by the app owner.\n\n"
-            "If you need custom keys, run locally or contact support."
-        )
+    st.title("\U0001F680 LinkedIn Content Generator Pro")
 
     topic = st.text_area(
         "Topic",
@@ -855,25 +817,10 @@ def main() -> None:
     if technical_depth == "Auto":
         st.caption(f"Auto-selected depth: {resolved_depth}")
 
-    primary_api_key = primary_api_key.strip()
-
-    # Resolve all free-provider API keys by key format or environment
-    gemini_api_key = resolve_api_key(
-        primary_api_key if is_valid_gemini_key(primary_api_key) else "",
-        ENV_GEMINI_API_KEY,
-    )
-    groq_api_key = resolve_api_key(
-        primary_api_key if is_valid_groq_key(primary_api_key) else "",
-        ENV_GROQ_API_KEY,
-    )
-    openrouter_api_key = resolve_api_key(
-        primary_api_key if is_valid_openrouter_key(primary_api_key) else "",
-        ENV_OPENROUTER_API_KEY,
-    )
-    openai_api_key = resolve_api_key(
-        "",
-        ENV_OPENAI_API_KEY,
-    )
+    gemini_api_key = ENV_GEMINI_API_KEY
+    groq_api_key = ENV_GROQ_API_KEY
+    openrouter_api_key = ENV_OPENROUTER_API_KEY
+    openai_api_key = ENV_OPENAI_API_KEY
 
     selected_api_key = ""
     if gemini_api_key and is_valid_gemini_key(gemini_api_key):
@@ -890,7 +837,7 @@ def main() -> None:
     if not selected_api_key:
         _, message_col, _ = st.columns([1, 2, 1])
         with message_col:
-            st.warning("\U0001F511 Add an API key above or configure one in the environment")
+            st.warning("\U0001F511 No API key found. Set GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in your .env file.")
     elif invalid_primary:
         st.error("Invalid API key format")
     elif topic_missing:
