@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div id="clock">00:00:00</div>
+      <div id="date"></div>
+    </div>
+    <div class="header-right">
+      <div id="greeting"></div>
+      <div class="name-wrap">
+        <span id="user-name-display"></span>
+        <button id="edit-name-btn" title="Edit name" aria-label="Edit name">✎</button>
+        <input id="user-name-input" type="text" maxlength="30" class="hidden" />
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="focus">
+      <label for="focus-input">Focus of the Day</label>
+      <textarea
+        id="focus-input"
+        placeholder="What's your focus today?"
+        maxlength="120"
+        rows="2"
+        spellcheck="false"
+      ></textarea>
+      <div id="focus-chars">0 / 120</div>
+    </section>
+
+    <div class="panels">
+      <section id="tasks" class="panel">
+        <div class="panel-header">
+          <h2>Tasks</h2>
+          <span id="task-count" class="badge"></span>
+        </div>
+        <div class="task-input-row">
+          <input id="task-input" type="text" placeholder="Add a task…" autocomplete="off" />
+          <button id="task-add-btn" aria-label="Add task">+</button>
+        </div>
+        <ul id="task-list"></ul>
+      </section>
+
+      <section id="links" class="panel">
+        <div class="panel-header">
+          <h2>Quick Links</h2>
+          <button id="link-add-btn" aria-label="Add link" title="Add link">+</button>
+        </div>
+        <div id="link-form" class="hidden">
+          <input id="link-url" type="url" placeholder="https://…" autocomplete="off" />
+          <input id="link-label" type="text" placeholder="Label" maxlength="40" autocomplete="off" />
+          <div class="link-form-actions">
+            <button id="link-save-btn" class="btn-primary">Save</button>
+            <button id="link-cancel-btn" class="btn-ghost">Cancel</button>
+          </div>
+        </div>
+        <ul id="link-list"></ul>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <span>Press <kbd>N</kbd> to add task &middot; <kbd>F</kbd> for focus</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
