@@ -1,22 +1,26 @@
-import atexit
 import hashlib
 import json
 import os
 import random
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Lock
+from threading import Lock, Thread
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 load_dotenv()
 GEMINI_MODEL = "gemini-2.5-flash"
+WORD_COUNT_RANGES: dict[str, tuple[int, int]] = {
+    "Short": (90, 130),
+    "Medium": (140, 210),
+    "Long": (220, 320),
+}
 GROQ_MODELS = [
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "openai/gpt-oss-20b",
+    "mixtral-8x7b-32768",
 ]
 OPENROUTER_MODELS = [
     # ⚡ Fast (Primary)
@@ -35,8 +39,7 @@ OPENROUTER_MODELS = [
 ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 ENV_GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
 ENV_OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", "")).strip()
-REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=2)
-atexit.register(lambda: REQUEST_EXECUTOR.shutdown(wait=False))
+REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 _REQUEST_CACHE: dict = {}
 _REQUEST_CACHE_LOCK = Lock()
@@ -115,7 +118,7 @@ def decay_provider_health():
                 _PROVIDER_HEALTH[k] -= 1
 
 
-def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple[str, str]:
+def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: str = "") -> tuple[str, str]:
     prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
     cached = get_cached_response(prompt_hash)
     if cached:
@@ -127,11 +130,20 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
             _IN_PROGRESS.add(prompt_hash)
 
     if in_progress:
-        time.sleep(0.5)
+        # Another request for the same prompt is already in flight.
+        # Wait up to 38 s for it to complete, then use its cached result.
+        deadline = time.time() + 38
+        while time.time() < deadline:
+            time.sleep(0.5)
+            with _IN_PROGRESS_LOCK:
+                still_running = prompt_hash in _IN_PROGRESS
+            if not still_running:
+                break
         cached = get_cached_response(prompt_hash)
         if cached:
             return cached, "Cache"
-        # Only add to in-progress if not already tracked
+        # In-flight request finished but produced no cache entry (it failed).
+        # Fall through and try independently — register ourselves in-progress first.
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.add(prompt_hash)
 
@@ -158,7 +170,7 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
                 start_time = time.time()
                 raw = generate_with_control(lambda: func(prompt, api_key))
                 latency = time.time() - start_time
-                post = enforce_hashtags(clean_post(raw))
+                post = enforce_hashtags(clean_post(raw), topic)
                 cache_response(prompt_hash, post)
                 with _STATE_LOCK:
                     _PROVIDER_LATENCY[provider_name] = latency
@@ -177,12 +189,26 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str]) -> tuple
 
 
 def call_with_timeout(func, timeout: int = 30):
-    future = REQUEST_EXECUTOR.submit(func)
-    try:
-        return future.result(timeout=timeout)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise TimeoutException("Request timed out") from exc
+    result: list = [None]
+    exc: list = [None]
+
+    def target():
+        try:
+            result[0] = func()
+        except Exception as e:
+            exc[0] = e
+
+    t = Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        # Thread is still running; it will be cleaned up when the underlying
+        # SDK/HTTP call eventually times out. Daemon flag ensures it won't
+        # block process exit.
+        raise TimeoutException("Request timed out")
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
 
 
 
@@ -333,14 +359,21 @@ def clean_post(text: str) -> str:
 
 
 
-def enforce_hashtags(text: str) -> str:
+def enforce_hashtags(text: str, topic: str = "") -> str:
     text = text.strip()
     hashtags = list(dict.fromkeys(re.findall(r"#\w+", text)))
     if len(hashtags) < 3:
-        defaults = ["#AI", "#Automation", "#Cloud"]
-        for tag in defaults:
-            if tag not in hashtags:
+        # Prefer topic-derived tags; fall back to generic ones only if needed
+        topic_tags = [
+            f"#{w.capitalize()}"
+            for w in re.findall(r"\b[A-Za-z]{4,}\b", topic)
+        ]
+        candidates = topic_tags + ["#Leadership", "#Innovation", "#Growth"]
+        existing_lower = {h.lower() for h in hashtags}
+        for tag in candidates:
+            if tag.lower() not in existing_lower:
                 hashtags.append(tag)
+                existing_lower.add(tag.lower())
             if len(hashtags) >= 3:
                 break
     hashtags = hashtags[:5]
@@ -380,15 +413,16 @@ _CTA_PHRASES = [
 ]
 
 
-def score_post(text: str) -> tuple[int, str]:
+def score_post(text: str, length: str = "Medium") -> tuple[int, str]:
     score = 5
     suggestions = []
 
+    lo, hi = WORD_COUNT_RANGES.get(length, WORD_COUNT_RANGES["Medium"])
     word_count = len(text.split())
-    if 100 <= word_count <= 280:
+    if lo <= word_count <= hi:
         score += 1
     else:
-        suggestions.append("Adjust length for better engagement (100–280 words).")
+        suggestions.append(f"Adjust length for better engagement ({lo}–{hi} words).")
 
     first_line = text.split("\n")[0]
     if len(first_line) > 20:
@@ -584,7 +618,7 @@ def generate_post(
         "Groq (Free)": groq_api_key,
         "OpenRouter (Free)": openrouter_api_key,
     }
-    post, provider = generate_with_fallback_chain(prompt, api_keys)
+    post, provider = generate_with_fallback_chain(prompt, api_keys, topic=topic)
     return GenerationResult(post=post, model_used="Auto", provider=provider)
 
 
@@ -692,7 +726,7 @@ def main() -> None:
                     openrouter_api_key=ENV_OPENROUTER_API_KEY,
                 )
                 latency = time.time() - start_time
-                score, suggestion = score_post(result.post)
+                score, suggestion = score_post(result.post, length)
                 st.session_state["last_result"] = result
                 st.session_state["last_score"] = score
                 st.session_state["last_suggestion"] = suggestion
@@ -761,7 +795,7 @@ def main() -> None:
                                     openrouter_api_key=ENV_OPENROUTER_API_KEY,
                                 )
                                 regenerated_latency = time.time() - start_time
-                                regenerated_score, regenerated_suggestion = score_post(regenerated_result.post)
+                                regenerated_score, regenerated_suggestion = score_post(regenerated_result.post, last_inputs["length"])
                                 st.session_state["last_result"] = regenerated_result
                                 st.session_state["last_score"] = regenerated_score
                                 st.session_state["last_suggestion"] = regenerated_suggestion
