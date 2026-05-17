@@ -3,8 +3,8 @@ import json
 import os
 import random
 import re
+import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock, Thread
 import streamlit as st
@@ -39,12 +39,14 @@ OPENROUTER_MODELS = [
 ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 ENV_GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
 ENV_OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", "")).strip()
-REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 _REQUEST_CACHE: dict = {}
 _REQUEST_CACHE_LOCK = Lock()
 MAX_CACHE_SIZE = 100
 
+# These dicts are intentionally process-level (shared across all Streamlit sessions)
+# so that one user's rate-limit failures act as a circuit breaker for all users,
+# avoiding thundering-herd retries against a provider that is already degraded.
 _PROVIDER_HEALTH = {
     "Gemini (Free)": 0,
     "Groq (Free)": 0,
@@ -118,76 +120,6 @@ def decay_provider_health():
                 _PROVIDER_HEALTH[k] -= 1
 
 
-def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: str = "") -> tuple[str, str]:
-    prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-    cached = get_cached_response(prompt_hash)
-    if cached:
-        return cached, "Cache"
-
-    with _IN_PROGRESS_LOCK:
-        in_progress = prompt_hash in _IN_PROGRESS
-        if not in_progress:
-            _IN_PROGRESS.add(prompt_hash)
-
-    if in_progress:
-        # Another request for the same prompt is already in flight.
-        # Wait up to 38 s for it to complete, then use its cached result.
-        deadline = time.time() + 38
-        while time.time() < deadline:
-            time.sleep(0.5)
-            with _IN_PROGRESS_LOCK:
-                still_running = prompt_hash in _IN_PROGRESS
-            if not still_running:
-                break
-        cached = get_cached_response(prompt_hash)
-        if cached:
-            return cached, "Cache"
-        # In-flight request finished but produced no cache entry (it failed).
-        # Fall through and try independently — register ourselves in-progress first.
-        with _IN_PROGRESS_LOCK:
-            _IN_PROGRESS.add(prompt_hash)
-
-    try:
-        last_error = None
-        decay_provider_health()
-        with _STATE_LOCK:
-            providers_to_try = sorted(
-                FREE_PROVIDER_CHAIN,
-                key=lambda x: (
-                    _PROVIDER_HEALTH.get(x[0], 0),
-                    _PROVIDER_LATENCY.get(x[0], 999)
-                )
-            )
-        for provider_name, func in providers_to_try:
-            api_key = api_keys.get(provider_name)
-            if not api_key:
-                continue
-            with _STATE_LOCK:
-                health = _PROVIDER_HEALTH.get(provider_name, 0)
-            if health > 3:
-                continue
-            try:
-                start_time = time.time()
-                raw = generate_with_control(lambda: func(prompt, api_key))
-                latency = time.time() - start_time
-                post = enforce_hashtags(clean_post(raw), topic)
-                cache_response(prompt_hash, post)
-                with _STATE_LOCK:
-                    _PROVIDER_LATENCY[provider_name] = latency
-                    _PROVIDER_HEALTH[provider_name] = 0
-                return post, provider_name
-            except Exception as e:
-                st.warning(f"{provider_name} failed: {str(e)[:80]}")
-                with _STATE_LOCK:
-                    _PROVIDER_HEALTH[provider_name] = _PROVIDER_HEALTH.get(provider_name, 0) + 1
-                last_error = e
-                continue
-        raise RuntimeError(f"All providers failed: {last_error}")
-    finally:
-        with _IN_PROGRESS_LOCK:
-            _IN_PROGRESS.discard(prompt_hash)
-
-
 def call_with_timeout(func, timeout: int = 30):
     result: list = [None]
     exc: list = [None]
@@ -227,7 +159,8 @@ def show_generation_error(exc: Exception) -> None:
     elif "authentication" in lower_message or "unauthorized" in lower_message or "api key" in lower_message:
         st.error("Authentication failed. Please verify your API key.")
     else:
-        st.error(f"Request failed: {message}. Please try again.")
+        print(f"Generation error: {message}", file=sys.stderr)
+        st.error("Generation failed. Please try again.")
 
 
 def persona_instructions(target_audience: str) -> str:
@@ -345,13 +278,15 @@ def clean_post(text: str) -> str:
         if not line:
             continue
         line = re.sub(r"^([-•])\s*", r"\1 ", line)
-        is_bullet = bool(re.match(r"^[-•\d+.)]", line))
+        is_bullet = bool(re.match(r"^[-•\d]", line))
         if formatted:
             prev_line = formatted[-1]
-            prev_is_bullet = bool(re.match(r"^[-•\d+.)]", prev_line))
+            prev_is_bullet = bool(re.match(r"^[-•\d]", prev_line))
             if not is_bullet and not prev_is_bullet:
                 formatted.append("")
             if not is_bullet and prev_is_bullet:
+                formatted.append("")
+            if is_bullet and not prev_is_bullet:
                 formatted.append("")
         formatted.append(line)
     return "\n".join(formatted).strip()
@@ -414,36 +349,36 @@ _CTA_PHRASES = [
 
 
 def score_post(text: str, length: str = "Medium") -> tuple[int, str]:
-    score = 5
+    score = 0
     suggestions = []
 
     lo, hi = WORD_COUNT_RANGES.get(length, WORD_COUNT_RANGES["Medium"])
     word_count = len(text.split())
     if lo <= word_count <= hi:
-        score += 1
+        score += 2
     else:
         suggestions.append(f"Adjust length for better engagement ({lo}–{hi} words).")
 
     first_line = text.split("\n")[0]
     if len(first_line) > 20:
-        score += 1
+        score += 2
     else:
         suggestions.append("Improve the opening hook to grab attention.")
 
     hashtags = re.findall(r"#\w+", text)
     if 3 <= len(hashtags) <= 5:
-        score += 1
+        score += 2
     else:
         suggestions.append("Use 3–5 relevant hashtags.")
 
     if "\n\n" in text:
-        score += 1
+        score += 2
     else:
         suggestions.append("Add spacing for better readability.")
 
     lower_text = text.lower()
     if any(phrase in lower_text for phrase in _CTA_PHRASES):
-        score += 1
+        score += 2
     else:
         suggestions.append("Consider adding a call-to-action.")
 
@@ -528,7 +463,6 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
         "X-Title": "LinkedIn Post Generator",
     }
     payload = {
-        "model": OPENROUTER_MODELS[0],
         "messages": [
             {
                 "role": "system",
@@ -600,6 +534,76 @@ FREE_PROVIDER_CHAIN = [
 ]
 
 
+def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: str = "") -> tuple[str, str]:
+    prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+    cached = get_cached_response(prompt_hash)
+    if cached:
+        return cached, "Cache"
+
+    with _IN_PROGRESS_LOCK:
+        in_progress = prompt_hash in _IN_PROGRESS
+        if not in_progress:
+            _IN_PROGRESS.add(prompt_hash)
+
+    if in_progress:
+        # Another request for the same prompt is already in flight.
+        # Wait up to 38 s for it to complete, then use its cached result.
+        deadline = time.time() + 38
+        while time.time() < deadline:
+            time.sleep(0.5)
+            with _IN_PROGRESS_LOCK:
+                still_running = prompt_hash in _IN_PROGRESS
+            if not still_running:
+                break
+        cached = get_cached_response(prompt_hash)
+        if cached:
+            return cached, "Cache"
+        # In-flight request finished but produced no cache entry (it failed).
+        # Fall through and try independently — register ourselves in-progress first.
+        with _IN_PROGRESS_LOCK:
+            _IN_PROGRESS.add(prompt_hash)
+
+    try:
+        last_error = None
+        decay_provider_health()
+        with _STATE_LOCK:
+            providers_to_try = sorted(
+                FREE_PROVIDER_CHAIN,
+                key=lambda x: (
+                    _PROVIDER_HEALTH.get(x[0], 0),
+                    _PROVIDER_LATENCY.get(x[0], 999)
+                )
+            )
+        for provider_name, func in providers_to_try:
+            api_key = api_keys.get(provider_name)
+            if not api_key:
+                continue
+            with _STATE_LOCK:
+                health = _PROVIDER_HEALTH.get(provider_name, 0)
+            if health > 3:
+                continue
+            try:
+                start_time = time.time()
+                raw = generate_with_control(lambda f=func, k=api_key: f(prompt, k))
+                latency = time.time() - start_time
+                post = enforce_hashtags(clean_post(raw), topic)
+                cache_response(prompt_hash, post)
+                with _STATE_LOCK:
+                    _PROVIDER_LATENCY[provider_name] = latency
+                    _PROVIDER_HEALTH[provider_name] = 0
+                return post, provider_name
+            except Exception as e:
+                print(f"{provider_name} failed: {str(e)[:80]}", file=sys.stderr)
+                with _STATE_LOCK:
+                    _PROVIDER_HEALTH[provider_name] = _PROVIDER_HEALTH.get(provider_name, 0) + 1
+                last_error = e
+                continue
+        raise RuntimeError(f"All providers failed: {last_error}")
+    finally:
+        with _IN_PROGRESS_LOCK:
+            _IN_PROGRESS.discard(prompt_hash)
+
+
 def generate_post(
     topic: str,
     tone: str,
@@ -623,15 +627,14 @@ def generate_post(
 
 
 def render_copy_button(text: str) -> None:
-    payload = (
-        json.dumps(text, ensure_ascii=True)
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("/", "\\u002f")
-    )
+    # Text is stored in a data-attribute (no user content in script body).
+    # " is encoded as &quot; so it's safe inside a double-quoted HTML attribute.
+    # JS uses JSON.parse to recover the original string after the browser
+    # HTML-decodes &quot; back to ", making the round-trip lossless.
+    safe_attr = json.dumps(text, ensure_ascii=True).replace('"', '&quot;')
     components.html(
         f"""
-        <button id="copy-btn" style="
+        <button id="copy-btn" data-text="{safe_attr}" style="
             background:#0a66c2;
             color:white;
             border:0;
@@ -644,7 +647,7 @@ def render_copy_button(text: str) -> None:
         <script>
         const button = document.getElementById("copy-btn");
         button.onclick = async () => {{
-            await navigator.clipboard.writeText({payload});
+            await navigator.clipboard.writeText(JSON.parse(button.dataset.text));
             button.innerText = "Copied";
             setTimeout(() => button.innerText = "Copy post", 1400);
         }};

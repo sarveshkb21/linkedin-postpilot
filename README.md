@@ -106,7 +106,7 @@ Scoring + UI Output
   * Groq
   * OpenRouter
 * **Language**: Python 3.10+
-* **Concurrency**: ThreadPoolExecutor
+* **Concurrency**: Thread (threading module)
 * **State Management**: Streamlit Session State
 
 ---
@@ -123,7 +123,6 @@ Create `.env` file:
 GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
 OPENROUTER_API_KEY=your_key_here
-OPENAI_API_KEY=your_key_here
 ```
 
 ---
@@ -135,13 +134,6 @@ GEMINI_API_KEY = "your_key"
 GROQ_API_KEY = "your_key"
 OPENROUTER_API_KEY = "your_key"
 ```
-
----
-
-## Option 3: UI Input
-
-* Enter API key directly in sidebar
-* Automatically detected based on format
 
 ---
 
@@ -162,7 +154,6 @@ python-dotenv
 requests
 groq
 google-genai
-openai
 ```
 
 ---
