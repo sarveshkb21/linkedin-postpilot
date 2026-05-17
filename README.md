@@ -22,7 +22,8 @@ This application uses a **smart routing engine** to generate high-quality Linked
 
 ## 🔁 Intelligent Fallback Engine
 
-* Provider-level failover (Gemini → Groq → OpenRouter)
+* Provider-level failover across Gemini, Groq, and OpenRouter
+* Order is dynamic — sorted by health score and latency on every request
 * Model-level fallback (Groq + OpenRouter)
 * Health-based routing (avoids failing providers)
 
@@ -59,8 +60,12 @@ This application uses a **smart routing engine** to generate high-quality Linked
 
 * Automatic formatting cleanup
 * Hashtag normalization (3–5 enforced)
-* Engagement scoring system
+* Engagement scoring (0–10) with per-criterion explanation
 * Regeneration with variation
+* Side-by-side comparison of previous vs new post
+* LinkedIn character counter (colour-coded: optimal / within limit / over limit)
+* Post history — last 10 generations, browsable with copy buttons
+* Settings persistence — tone, audience, length, perspective, and depth remembered across reruns
 
 ---
 

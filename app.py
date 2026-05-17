@@ -23,18 +23,16 @@ GROQ_MODELS = [
     "mixtral-8x7b-32768",
 ]
 OPENROUTER_MODELS = [
-    # ⚡ Fast (Primary)
+    # ⚡ Fast (Primary) — used for all prompts
     "mistralai/mistral-7b-instruct",
     "openchat/openchat-7b",
     "meta-llama/llama-3.2-3b-instruct",
     "google/gemma-3-4b",
-    # ⚖️ Balanced (Fallback)
+    # ⚖️ Balanced (Fallback) — added to pool for prompts ≥ 800 chars
     "google/gemma-3-12b",
     "z-ai/glm-4.5-air",
     "minimax/minimax-m2.5",
     "meta-llama/llama-3.3-70b-instruct",
-    # 🧠 Heavy (Last resort)
-    "nous/hermes-3-405b",
 ]
 ENV_GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 ENV_GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
@@ -62,7 +60,6 @@ _STATE_LOCK = Lock()  # guards _PROVIDER_HEALTH, _MODEL_HEALTH, _PROVIDER_LATENC
 @dataclass
 class GenerationResult:
     post: str
-    model_used: str
     provider: str
 
 
@@ -90,7 +87,6 @@ def retry_call(func, retries: int = 2):
             if attempt == retries - 1:
                 raise
             time.sleep(1.5)
-
 
 
 def get_cached_response(prompt_hash: str) -> str | None:
@@ -145,21 +141,27 @@ def call_with_timeout(func, timeout: int = 30):
 
 
 def generate_with_control(func, timeout: int = 35):
-    # Removed: time.sleep(0.6) — was adding 600 ms of dead latency to every
-    # generation. Rate-limit pauses belong inside individual provider functions
-    # only when an explicit 429 is received.
     return call_with_timeout(lambda: retry_call(func), timeout=timeout)
 
 
 def show_generation_error(exc: Exception) -> None:
     message = str(exc)
     lower_message = message.lower()
+    print(f"Generation error: {message}", file=sys.stderr)
     if isinstance(exc, TimeoutException) or "timeout" in lower_message or "timed out" in lower_message:
         st.error("Request timed out. Please try again.")
     elif "authentication" in lower_message or "unauthorized" in lower_message or "api key" in lower_message:
         st.error("Authentication failed. Please verify your API key.")
+    elif "all providers failed" in lower_message:
+        # Extract the provider list from the message, e.g. "[Gemini (Free), Groq (Free)]"
+        match = re.search(r"\[([^\]]+)\]", message)
+        providers_tried = match.group(1) if match else "all configured providers"
+        st.error(
+            f"Generation failed after trying {providers_tried}. "
+            "Check that your API keys are valid and you haven't exceeded rate limits. "
+            "Try again in a few seconds."
+        )
     else:
-        print(f"Generation error: {message}", file=sys.stderr)
         st.error("Generation failed. Please try again.")
 
 
@@ -292,8 +294,6 @@ def clean_post(text: str) -> str:
     return "\n".join(formatted).strip()
 
 
-
-
 def enforce_hashtags(text: str, topic: str = "") -> str:
     text = text.strip()
     hashtags = list(dict.fromkeys(re.findall(r"#\w+", text)))
@@ -319,7 +319,6 @@ def enforce_hashtags(text: str, topic: str = "") -> str:
     ]
     cleaned_text = "\n".join(cleaned_lines).strip()
     return cleaned_text + "\n\n" + " ".join(hashtags)
-
 
 
 _CTA_PHRASES = [
@@ -411,8 +410,6 @@ def generate_with_gemini(prompt: str, api_key: str) -> str:
     raise RuntimeError("Gemini returned an empty response.")
 
 
-
-
 def generate_with_groq(prompt: str, api_key: str) -> str:
     if not api_key:
         raise RuntimeError("Groq API key is required.")
@@ -478,11 +475,10 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
     }
 
     last_error = None
-    max_models_to_try = 2
     FAST_MODELS = OPENROUTER_MODELS[:4]
     BALANCED_MODELS = OPENROUTER_MODELS[4:8]
 
-    selected_models = FAST_MODELS if len(prompt) < 800 else FAST_MODELS + BALANCED_MODELS[:2]
+    selected_models = FAST_MODELS if len(prompt) < 800 else FAST_MODELS + BALANCED_MODELS
     with _STATE_LOCK:
         usable_models = [m for m in selected_models if _MODEL_HEALTH.get(m, 0) <= 2]
         if not usable_models:
@@ -493,7 +489,7 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
         )
 
     model_attempts = []
-    for model_name in sorted_models[:max_models_to_try]:
+    for model_name in sorted_models:
         model_attempts.append(model_name)
         payload["model"] = model_name
         try:
@@ -598,7 +594,8 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: s
                     _PROVIDER_HEALTH[provider_name] = _PROVIDER_HEALTH.get(provider_name, 0) + 1
                 last_error = e
                 continue
-        raise RuntimeError(f"All providers failed: {last_error}")
+        tried = [name for name, _ in providers_to_try if api_keys.get(name)]
+        raise RuntimeError(f"All providers failed [{', '.join(tried)}]: {last_error}")
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.discard(prompt_hash)
@@ -623,10 +620,10 @@ def generate_post(
         "OpenRouter (Free)": openrouter_api_key,
     }
     post, provider = generate_with_fallback_chain(prompt, api_keys, topic=topic)
-    return GenerationResult(post=post, model_used="Auto", provider=provider)
+    return GenerationResult(post=post, provider=provider)
 
 
-def render_copy_button(text: str) -> None:
+def render_copy_button(text: str, button_id: str = "copy-btn") -> None:
     # Text is stored in a data-attribute (no user content in script body).
     # " is encoded as &quot; so it's safe inside a double-quoted HTML attribute.
     # JS uses JSON.parse to recover the original string after the browser
@@ -634,7 +631,7 @@ def render_copy_button(text: str) -> None:
     safe_attr = json.dumps(text, ensure_ascii=True).replace('"', '&quot;')
     components.html(
         f"""
-        <button id="copy-btn" data-text="{safe_attr}" style="
+        <button id="{button_id}" data-text="{safe_attr}" style="
             background:#0a66c2;
             color:white;
             border:0;
@@ -645,7 +642,7 @@ def render_copy_button(text: str) -> None:
             width:100%;
         ">Copy post</button>
         <script>
-        const button = document.getElementById("copy-btn");
+        const button = document.getElementById("{button_id}");
         button.onclick = async () => {{
             await navigator.clipboard.writeText(JSON.parse(button.dataset.text));
             button.innerText = "Copied";
@@ -676,15 +673,16 @@ def main() -> None:
         tone = st.selectbox(
             "Tone",
             ["Professional", "Conversational", "Thought Leadership", "Bold", "Educational", "Persuasive"],
+            key="pref_tone",
         )
     with audience_col:
-        target_audience = st.selectbox("Target Audience", ["Executives", "Managers", "Engineers", "General Audience"])
+        target_audience = st.selectbox("Target Audience", ["Executives", "Managers", "Engineers", "General Audience"], key="pref_audience")
     with length_col:
-        length = st.selectbox("Length", ["Short", "Medium", "Long"], index=1)
+        length = st.selectbox("Length", ["Short", "Medium", "Long"], index=1, key="pref_length")
     with perspective_col:
-        perspective = st.selectbox("Perspective", ["Leader", "Practitioner", "Advisor", "Storyteller"])
+        perspective = st.selectbox("Perspective", ["Leader", "Practitioner", "Advisor", "Storyteller"], key="pref_perspective")
     with depth_col:
-        technical_depth = st.selectbox("Technical Depth", ["Auto", "Non-Technical", "Balanced", "Highly Technical"])
+        technical_depth = st.selectbox("Technical Depth", ["Auto", "Non-Technical", "Balanced", "Highly Technical"], key="pref_depth")
 
     resolved_depth = resolve_depth(technical_depth, target_audience)
     if technical_depth == "Auto":
@@ -698,15 +696,6 @@ def main() -> None:
     topic_missing = not topic.strip()
     generate_disabled = not any_key_ready or topic_missing
 
-    if not any_key_ready:
-        _, message_col, _ = st.columns([1, 2, 1])
-        with message_col:
-            st.warning("\U0001F511 No API key found. Set GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in your .env file.")
-    elif topic_missing:
-        st.warning("Please enter a topic to generate a LinkedIn post")
-    else:
-        st.success("Ready")
-
     generate = st.button(
         "Generate LinkedIn Post",
         type="primary",
@@ -714,10 +703,14 @@ def main() -> None:
         disabled=generate_disabled,
     )
 
+    if not any_key_ready:
+        st.warning("\U0001F511 No API key found. Set GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in your .env file.")
+    elif topic_missing:
+        st.info("Enter a topic above to get started.")
+    else:
+        st.success("✓ Ready to generate")
+
     if generate:
-        if not topic.strip():
-            st.warning("Enter a topic first.")
-            return
         with st.spinner("Generating your LinkedIn post..."):
             try:
                 start_time = time.time()
@@ -744,6 +737,10 @@ def main() -> None:
                 }
                 st.session_state["regen_count"] = 0
                 st.session_state.pop("last_regenerated_latency", None)
+                st.session_state.pop("previous_result", None)
+                history = st.session_state.get("post_history", [])
+                history.insert(0, {"post": result.post, "provider": result.provider, "score": score, "latency": latency})
+                st.session_state["post_history"] = history[:10]
             except Exception as exc:
                 show_generation_error(exc)
                 return
@@ -755,12 +752,12 @@ def main() -> None:
         latency = st.session_state.get("last_latency")
         regenerated_latency = st.session_state.get("last_regenerated_latency")
         regen_count = st.session_state.get("regen_count", 0)
+        previous_result: GenerationResult | None = st.session_state.get("previous_result")
 
         left, right = st.columns([2, 1])
         with left:
             st.subheader("Generated Post")
             st.success(f"Generated using: {result.provider}")
-            st.caption(f"Execution Path: {result.provider} -> {result.model_used}")
             if latency is not None:
                 st.caption(f"Latency: {latency:.2f}s")
             if regen_count:
@@ -799,12 +796,16 @@ def main() -> None:
                                 )
                                 regenerated_latency = time.time() - start_time
                                 regenerated_score, regenerated_suggestion = score_post(regenerated_result.post, last_inputs["length"])
+                                st.session_state["previous_result"] = result
                                 st.session_state["last_result"] = regenerated_result
                                 st.session_state["last_score"] = regenerated_score
                                 st.session_state["last_suggestion"] = regenerated_suggestion
                                 st.session_state["last_latency"] = regenerated_latency
                                 st.session_state["last_regenerated_latency"] = regenerated_latency
                                 st.session_state["regen_count"] = st.session_state.get("regen_count", 0) + 1
+                                history = st.session_state.get("post_history", [])
+                                history.insert(0, {"post": regenerated_result.post, "provider": regenerated_result.provider, "score": regenerated_score, "latency": regenerated_latency})
+                                st.session_state["post_history"] = history[:10]
                                 st.rerun()
                             except Exception as exc:
                                 show_generation_error(exc)
@@ -812,17 +813,65 @@ def main() -> None:
             with copy_col:
                 render_copy_button(result.post)
 
-            st.text_area("Output", result.post, height=380, label_visibility="collapsed")
+            if previous_result:
+                st.divider()
+                st.caption("Comparing with previous version")
+                prev_col, new_col = st.columns(2)
+                with prev_col:
+                    st.caption("**Previous**")
+                    render_copy_button(previous_result.post, button_id="copy-btn-prev")
+                    st.text_area("Previous", previous_result.post, height=300, label_visibility="collapsed", key="prev_output")
+                with new_col:
+                    st.caption("**New**")
+                    render_copy_button(result.post, button_id="copy-btn-new")
+                    st.text_area("New", result.post, height=300, label_visibility="collapsed", key="new_output")
+                if st.button("Dismiss comparison"):
+                    st.session_state.pop("previous_result", None)
+                    st.rerun()
+            else:
+                st.text_area("Output", result.post, height=380, label_visibility="collapsed")
+
+            char_count = len(result.post)
+            if char_count < 1300:
+                st.markdown(f'<span style="color:#28a745">✓ {char_count} characters — optimal for engagement</span>', unsafe_allow_html=True)
+            elif char_count <= 3000:
+                st.markdown(f'<span style="color:#fd7e14">⚠ {char_count} characters — within LinkedIn limit</span>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<span style="color:#dc3545">✗ {char_count} characters — exceeds LinkedIn\'s 3,000 character limit</span>', unsafe_allow_html=True)
 
         with right:
             st.subheader("Generation Details")
             st.metric("Engagement Score", f"{score}/10")
             st.write(suggestion)
+            with st.expander("How is this scored?"):
+                st.caption("Each criterion adds 2 points (max 10):")
+                st.caption("• Word count within target range")
+                st.caption("• Opening hook longer than 20 characters")
+                st.caption("• 3–5 relevant hashtags present")
+                st.caption("• Paragraph spacing (blank lines) present")
+                st.caption("• Call-to-action detected")
             st.divider()
             st.write("Provider")
             st.success(result.provider)
-            st.write("Model")
-            st.code(result.model_used, language="text")
+
+        post_history = st.session_state.get("post_history", [])
+        if len(post_history) > 1:
+            with st.expander(f"\U0001F4CB Post History ({len(post_history)} posts)"):
+                for i, entry in enumerate(post_history):
+                    label = f"#{i + 1} · {entry['provider']} · Score: {entry['score']}/10"
+                    if entry.get("latency"):
+                        label += f" · {entry['latency']:.1f}s"
+                    st.caption(label)
+                    st.text_area(
+                        f"history_{i}",
+                        entry["post"],
+                        height=150,
+                        label_visibility="collapsed",
+                        key=f"history_area_{i}",
+                    )
+                    render_copy_button(entry["post"], button_id=f"copy-btn-hist-{i}")
+                    if i < len(post_history) - 1:
+                        st.divider()
 
 
 if __name__ == "__main__":
