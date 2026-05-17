@@ -83,9 +83,10 @@ def retry_call(func, retries: int = 2):
     for attempt in range(retries):
         try:
             return func()
-        except Exception:
+        except Exception as exc:
             if attempt == retries - 1:
-                raise
+                raise exc
+
             time.sleep(1.5)
 
 
@@ -137,7 +138,6 @@ def call_with_timeout(func, timeout: int = 30):
     if exc[0] is not None:
         raise exc[0]
     return result[0]
-
 
 
 def generate_with_control(func, timeout: int = 35):
@@ -197,6 +197,18 @@ def perspective_instructions(perspective: str) -> str:
     return instructions.get(perspective, instructions["Advisor"])
 
 
+def tone_instructions(tone: str) -> str:
+    instructions = {
+        "Professional": "Use clear, measured language. Credible and direct, no hype or filler.",
+        "Conversational": "Write as if speaking to a peer. Warm, natural, and first-person throughout.",
+        "Thought Leadership": "Take a clear stance. Challenge assumptions and offer a distinct, defensible point of view.",
+        "Bold": "Open with a provocative or counterintuitive statement. Be direct, confident, and unafraid to polarise.",
+        "Educational": "Explain clearly, one idea at a time. Prioritise understanding over persuasion.",
+        "Persuasive": "Build a logical case with evidence and specific examples. Lead the reader to an obvious conclusion.",
+    }
+    return instructions.get(tone, instructions["Professional"])
+
+
 def resolve_depth(technical_depth: str, target_audience: str) -> str:
     if technical_depth != "Auto":
         return technical_depth
@@ -209,7 +221,7 @@ def resolve_depth(technical_depth: str, target_audience: str) -> str:
     return auto_depth.get(target_audience, "Balanced")
 
 
-def build_prompt(topic: str, tone: str, length: str, target_audience: str, perspective: str, depth: str) -> str:
+def build_prompt(topic: str, tone: str, length: str, target_audience: str, perspective: str, depth: str, instruction: str = "") -> str:
     length_rules = {
         "Short": "90 to 130 words",
         "Medium": "140 to 210 words",
@@ -227,6 +239,7 @@ def build_prompt(topic: str, tone: str, length: str, target_audience: str, persp
             "or implementation tradeoffs while staying readable on LinkedIn."
         ),
     }
+    instruction_block = f"\nAdditional instruction: {instruction}\n" if instruction else ""
     return f"""
 Create one LinkedIn post.
 Topic:
@@ -241,6 +254,8 @@ Perspective guidance:
 {perspective_instructions(perspective)}
 Tone:
 {tone}
+Tone guidance:
+{tone_instructions(tone)}
 Length:
 {length_rules.get(length, length_rules["Medium"])}
 Technical depth:
@@ -248,25 +263,19 @@ Technical depth:
 Technical depth guidance:
 {depth_rules.get(depth, depth_rules["Balanced"])}
 Strict writing rules:
-- Start with a strong hook in the first line.
-- Use short paragraphs with blank lines between them.
-- Do not use markdown formatting.
-- Use emojis naturally where they add clarity or emphasis.
-- Do not force emojis; use them only when appropriate.
-- Avoid excessive or repetitive emoji usage.
-- Use bullet points when listing multiple ideas, steps, or comparisons.
-- If the content includes multiple points, structure it using bullets for clarity.
-- Choose a natural bullet style (e.g., '-', '•', or numbered points).
-- Use only ONE bullet style consistently throughout the post.
-- Keep each bullet concise (preferably one line).
-- Do not overuse bullets; maintain a natural LinkedIn flow.
+- Write in first person (I / we). Speak from direct experience or a clear personal point of view.
+- Start with a strong hook in the first line using one of: a counterintuitive statement, a bold claim, a specific number or statistic, a relatable frustration, or a short provocative question.
+- Keep the first line under 120 characters — LinkedIn truncates to "...see more" after this, so it must stand alone and compel a click.
+- Structure the post as: Hook (first line) → Context or problem → Key insight or lesson → Call to action. Expand body sections proportionally to the target length.
 - End with a clear call to action.
-- You MUST include 3 to 5 relevant hashtags at the end.
-- Each hashtag MUST start with # (e.g., #AI #CloudComputing).
-- Do NOT write plain keywords; always prefix with #.
-- Place all hashtags on a new line at the very end.
-- Keep the post human, specific, and credible.
-- Return only the LinkedIn post text.
+- Keep paragraphs to 1–3 sentences, separated by blank lines.
+- Do not use markdown formatting.
+- Avoid LinkedIn clichés: "thrilled/humbled/excited to share", "game changer", "hot take", "unpopular opinion", "this is so important", "let that sink in".
+- Use emojis sparingly and only where they genuinely add clarity or emphasis. Never force them.
+- Use bullet points when listing multiple ideas, steps, or comparisons. Choose one style (e.g., '-', '•', or numbered) and use it consistently. Keep each bullet to one line. Do not overuse bullets; maintain a natural LinkedIn flow.
+- End with 3 to 5 relevant hashtags on their own line, each starting with # (e.g., #AI #CloudComputing). Never write plain keywords without the # prefix.
+- Keep the post human and credible. Include at least one concrete detail: a specific number, a real scenario, a named tool, or a tangible outcome. Avoid generic claims.
+{instruction_block}- Return only the LinkedIn post text.
 """.strip()
 
 
@@ -471,7 +480,7 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.75,
-        "max_tokens": 400,
+        "max_tokens": 512,
     }
 
     last_error = None
@@ -611,9 +620,10 @@ def generate_post(
     gemini_api_key: str = "",
     groq_api_key: str = "",
     openrouter_api_key: str = "",
+    instruction: str = "",
 ) -> GenerationResult:
     resolved_depth = resolve_depth(technical_depth, target_audience)
-    prompt = build_prompt(topic, tone, length, target_audience, perspective, resolved_depth)
+    prompt = build_prompt(topic, tone, length, target_audience, perspective, resolved_depth, instruction)
     api_keys = {
         "Gemini (Free)": gemini_api_key,
         "Groq (Free)": groq_api_key,
@@ -774,17 +784,16 @@ def main() -> None:
                     else:
                         original_topic = last_inputs["topic"]
                         variation_seed = random.randint(100000, 999999)
-                        enhanced_topic = (
-                            f"{original_topic}\n\n"
+                        variation_instruction = (
                             "Rewrite this post with a different hook, structure, and example "
                             "while keeping the same core idea. Avoid repeating phrases from "
-                            f"the previous version.\nVariation seed: {variation_seed}"
+                            f"the previous version. Variation seed: {variation_seed}"
                         )
                         with st.spinner("Regenerating your LinkedIn post..."):
                             try:
                                 start_time = time.time()
                                 regenerated_result = generate_post(
-                                    enhanced_topic,
+                                    original_topic,
                                     last_inputs["tone"],
                                     last_inputs["length"],
                                     last_inputs["target_audience"],
@@ -793,6 +802,7 @@ def main() -> None:
                                     gemini_api_key=ENV_GEMINI_API_KEY,
                                     groq_api_key=ENV_GROQ_API_KEY,
                                     openrouter_api_key=ENV_OPENROUTER_API_KEY,
+                                    instruction=variation_instruction,
                                 )
                                 regenerated_latency = time.time() - start_time
                                 regenerated_score, regenerated_suggestion = score_post(regenerated_result.post, last_inputs["length"])

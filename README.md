@@ -52,7 +52,11 @@ This application uses a **smart routing engine** to generate high-quality Linked
   * Practitioner
   * Advisor
   * Storyteller
+* Tone-specific guidance (6 tones — Professional, Conversational, Thought Leadership, Bold, Educational, Persuasive)
 * Dynamic technical depth (Auto mode)
+* Hook pattern specification (5 named patterns + 120-character cutoff awareness)
+* Narrative arc enforcement: Hook → Context → Insight → Call to action
+* First-person voice, cliché avoidance, and concrete detail requirements built in
 
 ---
 
