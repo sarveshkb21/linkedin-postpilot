@@ -3,6 +3,7 @@ __pycache__/
 .env
 .venv/
 venv/
+secrets.toml
 .streamlit/secrets.toml
 streamlit.log
 streamlit.err.log

@@ -61,6 +61,7 @@ _STATE_LOCK = Lock()  # guards _PROVIDER_HEALTH, _MODEL_HEALTH, _PROVIDER_LATENC
 class GenerationResult:
     post: str
     provider: str
+    model: str = ""
 
 
 class TimeoutException(Exception):
@@ -398,7 +399,7 @@ def score_post(text: str, length: str = "Medium") -> tuple[int, str]:
     return final_score, suggestion_text
 
 
-def generate_with_gemini(prompt: str, api_key: str) -> str:
+def generate_with_gemini(prompt: str, api_key: str) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("Gemini API key is required.")
     try:
@@ -411,15 +412,15 @@ def generate_with_gemini(prompt: str, api_key: str) -> str:
         contents=prompt,
     )
     if hasattr(response, "text") and response.text:
-        return response.text
+        return response.text, GEMINI_MODEL
     if hasattr(response, "candidates") and response.candidates:
         parts = getattr(response.candidates[0].content, "parts", [])
         if parts and getattr(parts[0], "text", None):
-            return parts[0].text
+            return parts[0].text, GEMINI_MODEL
     raise RuntimeError("Gemini returned an empty response.")
 
 
-def generate_with_groq(prompt: str, api_key: str) -> str:
+def generate_with_groq(prompt: str, api_key: str) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("Groq API key is required.")
     try:
@@ -449,14 +450,14 @@ def generate_with_groq(prompt: str, api_key: str) -> str:
             )
             content = response.choices[0].message.content
             if content:
-                return content
+                return content, model
         except Exception as e:
             last_error = e
             continue
     raise RuntimeError(f"Groq failed after trying {model_attempts}: {last_error}")
 
 
-def generate_with_openrouter(prompt: str, api_key: str) -> str:
+def generate_with_openrouter(prompt: str, api_key: str) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("OpenRouter API key is required.")
     try:
@@ -521,7 +522,7 @@ def generate_with_openrouter(prompt: str, api_key: str) -> str:
                 with _STATE_LOCK:
                     _MODEL_HEALTH[model_name] = 0
                     _PROVIDER_LATENCY[model_name] = time.time() - start
-                return content
+                return content, model_name
             raise RuntimeError("Empty response")
         except Exception as e:
             with _STATE_LOCK:
@@ -539,11 +540,11 @@ FREE_PROVIDER_CHAIN = [
 ]
 
 
-def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: str = "") -> tuple[str, str]:
+def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: str = "") -> tuple[str, str, str]:
     prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
     cached = get_cached_response(prompt_hash)
     if cached:
-        return cached, "Cache"
+        return cached, "Cache", ""
 
     with _IN_PROGRESS_LOCK:
         in_progress = prompt_hash in _IN_PROGRESS
@@ -562,7 +563,7 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: s
                 break
         cached = get_cached_response(prompt_hash)
         if cached:
-            return cached, "Cache"
+            return cached, "Cache", ""
         # In-flight request finished but produced no cache entry (it failed).
         # Fall through and try independently — register ourselves in-progress first.
         with _IN_PROGRESS_LOCK:
@@ -589,14 +590,14 @@ def generate_with_fallback_chain(prompt: str, api_keys: dict[str, str], topic: s
                 continue
             try:
                 start_time = time.time()
-                raw = generate_with_control(lambda f=func, k=api_key: f(prompt, k))
+                raw, model = generate_with_control(lambda f=func, k=api_key: f(prompt, k))
                 latency = time.time() - start_time
                 post = enforce_hashtags(clean_post(raw), topic)
                 cache_response(prompt_hash, post)
                 with _STATE_LOCK:
                     _PROVIDER_LATENCY[provider_name] = latency
                     _PROVIDER_HEALTH[provider_name] = 0
-                return post, provider_name
+                return post, provider_name, model
             except Exception as e:
                 print(f"{provider_name} failed: {str(e)[:80]}", file=sys.stderr)
                 with _STATE_LOCK:
@@ -629,8 +630,8 @@ def generate_post(
         "Groq (Free)": groq_api_key,
         "OpenRouter (Free)": openrouter_api_key,
     }
-    post, provider = generate_with_fallback_chain(prompt, api_keys, topic=topic)
-    return GenerationResult(post=post, provider=provider)
+    post, provider, model = generate_with_fallback_chain(prompt, api_keys, topic=topic)
+    return GenerationResult(post=post, provider=provider, model=model)
 
 
 def render_copy_button(text: str, button_id: str = "copy-btn") -> None:
@@ -767,7 +768,10 @@ def main() -> None:
         left, right = st.columns([2, 1])
         with left:
             st.subheader("Generated Post")
-            st.success(f"Generated using: {result.provider}")
+            provider_label = f"Generated using: {result.provider}"
+            if result.model:
+                provider_label += f"  •  Model: {result.model}"
+            st.success(provider_label)
             if latency is not None:
                 st.caption(f"Latency: {latency:.2f}s")
             if regen_count:
@@ -862,7 +866,10 @@ def main() -> None:
                 st.caption("• Call-to-action detected")
             st.divider()
             st.write("Provider")
-            st.success(result.provider)
+            provider_text = result.provider
+            if result.model:
+                provider_text += f"  •  Model: {result.model}"
+            st.success(provider_text)
 
         post_history = st.session_state.get("post_history", [])
         if len(post_history) > 1:
